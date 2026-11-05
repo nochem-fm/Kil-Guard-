@@ -46,7 +46,7 @@ public class Hook implements IXposedHookLoadPackage {
         }
         if (!"android".equals(lp.packageName)) return;
         ClassLoader cl = lp.classLoader;
-        XposedBridge.log(TAG + "loaded in system_server");
+        log("loaded in system_server");
 
         // 1a. most kills (force-stop, kill background, cleaners) go through removeProcessLocked(app, ..., reason):
         //     skipping it whole keeps the process AND its bookkeeping in AMS consistent
@@ -59,10 +59,10 @@ public class Hook implements IXposedHookLoadPackage {
                 String reason = "";
                 for (Object a : p.args) if (a instanceof String) reason = (String) a;
                 if (shouldBlock(reason)) {
-                    XposedBridge.log(TAG + "blocked kill of " + pkg + " (" + reason + ")");
+                    log("blocked kill of " + pkg + " (" + reason + ")");
                     p.setResult(Boolean.FALSE);
                 } else {
-                    XposedBridge.log(TAG + "allowed kill of " + pkg + " (" + reason + ")");
+                    log("allowed kill of " + pkg + " (" + reason + ")");
                 }
             }
             @Override protected void afterHookedMethod(MethodHookParam p) { IN_REMOVE.set(Boolean.FALSE); }
@@ -71,20 +71,22 @@ public class Hook implements IXposedHookLoadPackage {
         hook(cl, "com.android.server.am.ActivityManagerService", "removeProcessLocked", remove);
 
         // 1b. direct kills ("remove task" from recents, vendor cleaners) call ProcessRecord.killLocked(reason, ...)
-        hook(cl, "com.android.server.am.ProcessRecord", "killLocked", new XC_MethodHook() {
+        XC_MethodHook direct = new XC_MethodHook() {
             @Override protected void beforeHookedMethod(MethodHookParam p) {
                 if (Boolean.TRUE.equals(IN_REMOVE.get())) return;   // already decided in removeProcessLocked
                 String pkg = pkgOf(p.thisObject);
                 if (pkg == null || !isGuarded(pkg)) return;
                 String reason = p.args.length > 0 && p.args[0] instanceof String ? (String) p.args[0] : "";
                 if (shouldBlock(reason)) {
-                    XposedBridge.log(TAG + "blocked kill of " + pkg + " (" + reason + ")");
+                    log("blocked kill of " + pkg + " (" + reason + ")");
                     p.setResult(null);
                 } else {
-                    XposedBridge.log(TAG + "allowed kill of " + pkg + " (" + reason + ")");
+                    log("allowed kill of " + pkg + " (" + reason + ")");
                 }
             }
-        });
+        };
+        hook(cl, "com.android.server.am.ProcessRecord", "killLocked", direct);   // Android 12+
+        hook(cl, "com.android.server.am.ProcessRecord", "kill", direct);         // Android 10-11
 
         // 2. force-stop / kill-background requested by another app (the recents screen, a cleaner)
         XC_MethodHook byCaller = new XC_MethodHook() {
@@ -95,10 +97,10 @@ public class Hook implements IXposedHookLoadPackage {
                 int uid = Binder.getCallingUid();
                 String caller = procName(Binder.getCallingPid());
                 if (uid == 0 || uid == 2000 || userAllowed(caller)) {
-                    XposedBridge.log(TAG + "allowed " + p.method.getName() + " " + pkg + " by " + caller);
+                    log("allowed " + p.method.getName() + " " + pkg + " by " + caller);
                     return;
                 }
-                XposedBridge.log(TAG + "blocked " + p.method.getName() + " " + pkg + " by " + caller + " (uid " + uid + ")");
+                log("blocked " + p.method.getName() + " " + pkg + " by " + caller + " (uid " + uid + ")");
                 p.setResult(null);
             }
         };
@@ -112,7 +114,7 @@ public class Hook implements IXposedHookLoadPackage {
                 String pkg = taskPkg(p.args[0]);
                 if (pkg != null && isGuarded(pkg)) {
                     p.args[1] = Boolean.FALSE;
-                    XposedBridge.log(TAG + "kept process of " + pkg + " when its task was removed");
+                    log("kept process of " + pkg + " when its task was removed");
                 }
             }
         };
@@ -120,14 +122,42 @@ public class Hook implements IXposedHookLoadPackage {
         hook(cl, "com.android.server.wm.ActivityStackSupervisor", "removeTask", task);     // Android 10-11
     }
 
+    // ------------------------------------------------------------------ status file the settings screen reads (via root)
+
+    static final File STATUS = new File("/data/system/killguard.status");
+    private static final java.util.ArrayDeque<String> EVENTS = new java.util.ArrayDeque<String>();
+    private static final StringBuilder HOOKS = new StringBuilder();
+    private static final java.text.SimpleDateFormat TS = new java.text.SimpleDateFormat("dd/MM HH:mm:ss", Locale.US);
+
+    /** Logs to Xposed/logcat and keeps the line in /data/system/killguard.status (hook list + last events). */
+    static void log(String line) {
+        XposedBridge.log(TAG + line);
+        synchronized (EVENTS) {
+            if (line.startsWith("hooked ") || line.startsWith("could not hook") || line.startsWith("loaded")) HOOKS.append(line).append('\n');
+            else {
+                EVENTS.addLast(TS.format(new java.util.Date()) + "  " + line);
+                while (EVENTS.size() > 40) EVENTS.pollFirst();
+            }
+            try {
+                StringBuilder b = new StringBuilder("boot=" + (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()) + "\n");
+                b.append(HOOKS).append("--\n");
+                for (String e : EVENTS) b.append(e).append('\n');
+                java.io.FileOutputStream o = new java.io.FileOutputStream(STATUS);
+                o.write(b.toString().getBytes("UTF-8"));
+                o.close();
+                STATUS.setReadable(true, false);
+            } catch (Throwable ignored) { }
+        }
+    }
+
     private static void hook(ClassLoader cl, String cls, String method, XC_MethodHook h) {
         try {
             Class<?> c = XposedHelpers.findClassIfExists(cls, cl);
             if (c == null) return;
             Set<?> s = XposedBridge.hookAllMethods(c, method, h);
-            XposedBridge.log(TAG + "hooked " + cls.substring(cls.lastIndexOf('.') + 1) + "." + method + " x" + (s == null ? 0 : s.size()));
+            log("hooked " + cls.substring(cls.lastIndexOf('.') + 1) + "." + method + " x" + (s == null ? 0 : s.size()));
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "could not hook " + cls + "." + method + ": " + t);
+            log("could not hook " + cls + "." + method + ": " + t);
         }
     }
 

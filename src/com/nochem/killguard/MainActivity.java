@@ -140,7 +140,7 @@ public class MainActivity extends Activity {
         // header: name, status, info, log - one line
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView name = text("שומר מהריגה", 18, TXT);
+        TextView name = text("Kill Guard", 18, TXT);
         name.setTypeface(null, Typeface.BOLD);
         head.addView(name);
         statusChip = text("", 12, TXT);
@@ -245,10 +245,51 @@ public class MainActivity extends Activity {
         return t;
     }
 
+    /** 1 = the hooks are running in system_server (this boot), 0 = they are not, -1 = cannot tell (no root). */
+    volatile int sysState = -1;
+    String statusText = "";
+
+    void checkSystem() {
+        new Thread(new Runnable() {
+            public void run() {
+                String st = su("cat /data/system/killguard.status 2>/dev/null; echo __END__");
+                int s = -1;
+                if (st != null && st.contains("__END__")) {
+                    s = 0;
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("boot=(\\d+)").matcher(st);
+                    long boot = System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime();
+                    if (m.find() && Math.abs(Long.parseLong(m.group(1)) - boot) < 5 * 60000L && st.contains("hooked ")) s = 1;
+                    statusText = st.replace("__END__", "").trim();
+                }
+                sysState = s;
+                runOnUiThread(new Runnable() { public void run() { refresh(); } });
+            }
+        }).start();
+    }
+
+    /** Runs a root command and returns its output, or null without root. */
+    static String su(String cmd) {
+        try {
+            Process p = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start();
+            BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            StringBuilder b = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) b.append(line).append('\n');
+            return p.waitFor() == 0 || b.length() > 0 ? b.toString() : null;
+        } catch (Exception e) { return null; }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        checkSystem();
+    }
+
     /** Status chip, mode chips and hard-mode chip. */
     void refresh() {
-        boolean on = moduleActive();
-        statusChip.setText(on ? "● פעיל · " + chosen.size() + " מוגנות" : "● לא פעיל");
+        boolean on = moduleActive() && sysState != 0;
+        String why = !moduleActive() ? "● לא פעיל" : sysState == 0 ? "● לא פעיל במערכת" : "";
+        statusChip.setText(on ? "● פעיל · " + chosen.size() + " מוגנות" : why);
         statusChip.setTextColor(on ? GOOD : BAD);
         statusChip.setBackground(round((on ? GOOD : BAD) & 0x22FFFFFF, 12));
         statusChip.setOnClickListener(on ? null : new View.OnClickListener() { public void onClick(View v) { showInfo(); } });
@@ -262,13 +303,14 @@ public class MainActivity extends Activity {
     void showInfo() {
         String msg = "האפליקציות המוגנות לא ייסגרו כשלוחצים 'סגור הכל' באחרונות, או כשמנקה זיכרון סוגר אפליקציות.\n\n"
             + "ממשיכים לעבוד כרגיל: קריסה, עדכון, הסרה, מחסור אמיתי בזיכרון, ו'עצירה בכפייה' שאתה עושה בהגדרות.\n\n"
-            + (moduleActive() ? "המודול פעיל. שינויים ברשימה נכנסים לתוקף מיד."
+            + (moduleActive() && sysState == 0 ? "המודול פעיל באפליקציה אבל לא רץ במערכת: ב-Vector / LSPosed סמן בהיקף (Scope) של המודול את 'מסגרת המערכת' (System Framework / android) ואתחל את הטלפון."
+            : moduleActive() ? "המודול פעיל. שינויים ברשימה נכנסים לתוקף מיד."
             : "המודול עוד לא פעיל: ב-Vector / LSPosed הפעל את 'שומר מהריגה', סמן בהיקף את 'מסגרת המערכת' (System Framework), ואתחל את הטלפון.")
             + "\n\n☰ יומן: מה נחסם ומה הותר.";
         String ver = "";
         try { ver = " " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) { }
-        msg += "\n\nשומר מהריגה" + ver + "\nנבנה על ידי @נוחעם-FM מפורום מתמחים טופ";
-        new AlertDialog.Builder(this).setTitle("שומר מהריגה").setMessage(msg).setPositiveButton("סגור", null)
+        msg += "\n\nKill Guard" + ver + "\nנבנה על ידי @נוחעם-FM מפורום מתמחים טופ";
+        new AlertDialog.Builder(this).setTitle("Kill Guard").setMessage(msg).setPositiveButton("סגור", null)
             .setNeutralButton("@נוחעם-FM", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
                     try {
@@ -391,20 +433,21 @@ public class MainActivity extends Activity {
     void showLog() {
         new Thread(new Runnable() {
             public void run() {
+                StringBuilder pk = new StringBuilder();
+                for (String c : chosen) pk.append(pk.length() > 0 ? "|" : "").append(c.replace(".", "\\."));
+                String kills = pk.length() == 0 ? "" : su("logcat -b events -d 2>/dev/null | grep -E 'am_kill|am_proc_died' | grep -E '" + pk + "' | tail -n 15");
+                String st = su("cat /data/system/killguard.status 2>/dev/null");
                 String out;
-                try {
-                    Process p = new ProcessBuilder("su", "-c", "logcat -d | grep -F 'KillGuard' | tail -n 60").redirectErrorStream(true).start();
-                    BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                if (st == null && kills == null) out = "אין root לקריאת היומן. הרשומות מופיעות גם ביומן (Logs) של Vector / LSPosed.";
+                else {
                     StringBuilder b = new StringBuilder();
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        if (line.contains("hooked ") || line.contains("loaded in")) continue;
-                        b.append(line.replaceAll("^.*KillGuard: ", "")).append('\n');
-                    }
-                    p.waitFor();
-                    out = b.length() == 0 ? "אין עדיין רשומות. אחרי 'סגור הכל' יופיע כאן מה נחסם ומה הותר." : b.toString();
-                } catch (Exception e) {
-                    out = "אין root לקריאת היומן. הרשומות מופיעות גם ביומן (Logs) של Vector / LSPosed.";
+                    String s = st == null ? "" : st.trim();
+                    int sep = s.indexOf("\n--");
+                    String hooks = sep < 0 ? s : s.substring(0, sep), events = sep < 0 ? "" : s.substring(sep + 3).trim();
+                    b.append("== במערכת ==\n").append(hooks.isEmpty() ? "המודול לא נטען ב-system_server מאז האתחול האחרון.\nסמן 'מסגרת המערכת' בהיקף ואתחל." : hooks.replaceAll("boot=\\d+\\n?", "")).append("\n\n");
+                    b.append("== נחסם / הותר ==\n").append(events.isEmpty() ? "אין עדיין. נסה 'סגור הכל' ופתח שוב." : events).append("\n\n");
+                    b.append("== הריגות של מוגנות (am_kill) ==\n").append(kills == null || kills.trim().isEmpty() ? "אין" : kills.trim());
+                    out = b.toString();
                 }
                 final String result = out;
                 runOnUiThread(new Runnable() {
