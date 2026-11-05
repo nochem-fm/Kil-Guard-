@@ -436,6 +436,9 @@ public class MainActivity extends Activity {
                 StringBuilder pk = new StringBuilder();
                 for (String c : chosen) pk.append(pk.length() > 0 ? "|" : "").append(c.replace(".", "\\."));
                 String kills = pk.length() == 0 ? "" : su("logcat -b events -d 2>/dev/null | grep -E 'am_kill|am_proc_died' | grep -E '" + pk + "' | tail -n 15");
+                // who else kills: low-memory killer, a crash, or a direct signal (no am_kill line)
+                String why = pk.length() == 0 ? "" : su("logcat -b all -d 2>/dev/null | grep -iE 'lowmemorykiller|lmkd|killinfo|kill|died|FATAL|signal|sigkill|freez' "
+                    + "| grep -iE '" + pk + "|lowmemorykiller|lmkd|killinfo' | grep -vE 'am_proc_died|KillGuard|SuCallbackHandler' | tail -n 25");
                 String st = su("cat /data/system/killguard.status 2>/dev/null");
                 String out;
                 if (st == null && kills == null) out = "אין root לקריאת היומן. הרשומות מופיעות גם ביומן (Logs) של Vector / LSPosed.";
@@ -447,6 +450,7 @@ public class MainActivity extends Activity {
                     b.append("== במערכת ==\n").append(hooks.isEmpty() ? "המודול לא נטען ב-system_server מאז האתחול האחרון.\nסמן 'מסגרת המערכת' בהיקף ואתחל." : hooks.replaceAll("boot=\\d+\\n?", "")).append("\n\n");
                     b.append("== נחסם / הותר ==\n").append(events.isEmpty() ? "אין עדיין. נסה 'סגור הכל' ופתח שוב." : events).append("\n\n");
                     b.append("== הריגות של מוגנות (am_kill) ==\n").append(kills == null || kills.trim().isEmpty() ? "אין" : kills.trim());
+                    b.append("\n\n== מי עוד הורג (lmkd / קריסה / אות) ==\n").append(why == null || why.trim().isEmpty() ? "אין" : why.trim());
                     out = b.toString();
                 }
                 final String result = out;
