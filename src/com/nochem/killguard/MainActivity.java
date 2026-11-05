@@ -451,43 +451,56 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** Opens at once with the module's own status file; the log search (slow on big log buffers) fills in after. */
     void showLog() {
+        final TextView t = text("טוען…", 12, TXT);
+        t.setTextIsSelectable(true);
+        t.setTextDirection(View.TEXT_DIRECTION_LTR);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setPadding(dp(18), dp(8), dp(18), dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(t);
+        new AlertDialog.Builder(this).setTitle("יומן").setView(sv).setPositiveButton("סגור", null).show();
         new Thread(new Runnable() {
             public void run() {
+                String st = su("cat /data/system/killguard.status 2>/dev/null; echo __OK__");
+                if (st == null) { show(t, "אין root לקריאת היומן. הרשומות מופיעות גם ביומן (Logs) של Vector / LSPosed."); return; }
+                st = st.replace("__OK__", "").trim();
+                int sep = st.indexOf("\n--");
+                String hooks = sep < 0 ? st : st.substring(0, sep), events = sep < 0 ? "" : st.substring(sep + 3).trim();
+                final StringBuilder b = new StringBuilder();
+                b.append("== במערכת ==\n").append(hooks.isEmpty() ? "המודול לא נטען ב-system_server מאז האתחול האחרון.\nסמן 'מסגרת המערכת' בהיקף ואתחל." : hooks.replaceAll("boot=\\d+\\n?", "")).append("\n\n");
+                b.append("== נחסם / הותר ==\n").append(events.isEmpty() ? "אין עדיין. נסה 'סגור הכל' ופתח שוב." : events).append("\n\n");
+                show(t, b + "== הריגות ==\nמחפש בלוגים…");
+
                 StringBuilder pk = new StringBuilder();
                 for (String c : chosen) pk.append(pk.length() > 0 ? "|" : "").append(c.replace(".", "\\."));
-                String kills = pk.length() == 0 ? "" : su("logcat -b events -d 2>/dev/null | grep -E 'am_kill|am_proc_died' | grep -E '" + pk + "' | tail -n 15");
-                // who else kills: low-memory killer, a crash, or a direct signal (no am_kill line)
-                String why = pk.length() == 0 ? "" : su("logcat -b all -d 2>/dev/null | grep -iE 'lowmemorykiller|lmkd|killinfo|kill|died|FATAL|signal|sigkill|freez' "
-                    + "| grep -iE '" + pk + "|lowmemorykiller|lmkd|killinfo' | grep -vE 'am_proc_died|KillGuard|SuCallbackHandler' | tail -n 25");
-                String st = su("cat /data/system/killguard.status 2>/dev/null");
-                String out;
-                if (st == null && kills == null) out = "אין root לקריאת היומן. הרשומות מופיעות גם ביומן (Logs) של Vector / LSPosed.";
-                else {
-                    StringBuilder b = new StringBuilder();
-                    String s = st == null ? "" : st.trim();
-                    int sep = s.indexOf("\n--");
-                    String hooks = sep < 0 ? s : s.substring(0, sep), events = sep < 0 ? "" : s.substring(sep + 3).trim();
-                    b.append("== במערכת ==\n").append(hooks.isEmpty() ? "המודול לא נטען ב-system_server מאז האתחול האחרון.\nסמן 'מסגרת המערכת' בהיקף ואתחל." : hooks.replaceAll("boot=\\d+\\n?", "")).append("\n\n");
-                    b.append("== נחסם / הותר ==\n").append(events.isEmpty() ? "אין עדיין. נסה 'סגור הכל' ופתח שוב." : events).append("\n\n");
-                    b.append("== הריגות של מוגנות (am_kill) ==\n").append(kills == null || kills.trim().isEmpty() ? "אין" : kills.trim());
-                    b.append("\n\n== מי עוד הורג (lmkd / קריסה / אות) ==\n").append(why == null || why.trim().isEmpty() ? "אין" : why.trim());
-                    out = b.toString();
-                }
-                final String result = out;
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        TextView t = text(result, 12, TXT);
-                        t.setTextIsSelectable(true);
-                        t.setTextDirection(View.TEXT_DIRECTION_LTR);
-                        t.setTypeface(Typeface.MONOSPACE);
-                        t.setPadding(dp(18), dp(8), dp(18), dp(8));
-                        ScrollView sv = new ScrollView(MainActivity.this);
-                        sv.addView(t);
-                        new AlertDialog.Builder(MainActivity.this).setTitle("יומן").setView(sv).setPositiveButton("סגור", null).show();
+                StringBuilder kills = new StringBuilder(), why = new StringBuilder();
+                if (pk.length() > 0) {
+                    // one pass over the newest lines only (-t), not the whole buffer
+                    String out = su("logcat -b events,main,system -d -t 8000 2>/dev/null | grep -iE '" + pk + "|lowmemorykiller|killinfo' "
+                        + "| grep -iE 'am_kill|am_proc_died|lowmemorykiller|killinfo|kill|died|FATAL|signal' | grep -vE 'KillGuard|SuCallbackHandler' | tail -n 60");
+                    if (out != null) for (String line : out.split("\n")) {
+                        if (line.trim().isEmpty()) continue;
+                        if (line.contains("am_kill") || line.contains("am_proc_died")) kills.append(line).append('\n');
+                        else why.append(line).append('\n');
                     }
-                });
+                }
+                b.append("== הריגות של מוגנות (am_kill / am_proc_died) ==\n").append(kills.length() == 0 ? "אין" : last(kills.toString(), 15));
+                b.append("\n\n== מי עוד הורג (lmkd / קריסה / אות) ==\n").append(why.length() == 0 ? "אין" : last(why.toString(), 25));
+                show(t, b.toString());
             }
         }).start();
+    }
+
+    static String last(String s, int n) {
+        String[] l = s.trim().split("\n");
+        StringBuilder b = new StringBuilder();
+        for (int i = Math.max(0, l.length - n); i < l.length; i++) b.append(l[i]).append('\n');
+        return b.toString().trim();
+    }
+
+    void show(final TextView t, final String s) {
+        runOnUiThread(new Runnable() { public void run() { t.setText(s); } });
     }
 }
