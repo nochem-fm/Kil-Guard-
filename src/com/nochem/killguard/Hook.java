@@ -29,10 +29,11 @@ public class Hook implements IXposedHookLoadPackage {
     static final String PKG = "com.nochem.killguard";
     static final File ROOT_CONF = new File("/data/system/killguard.conf");
 
+    static final int KEEP_ADJ = 200;   // PERCEPTIBLE_APP_ADJ
     private static XSharedPreferences prefs;
     private static final ThreadLocal<Boolean> IN_REMOVE = new ThreadLocal<Boolean>();
     private static volatile Set<String> guarded = Collections.emptySet();
-    private static volatile boolean aggressive;
+    private static volatile boolean aggressive, keepMem;
     private static long lastLoad;
 
     @Override
@@ -87,6 +88,21 @@ public class Hook implements IXposedHookLoadPackage {
         };
         hook(cl, "com.android.server.am.ProcessRecord", "killLocked", direct);   // Android 12+
         hook(cl, "com.android.server.am.ProcessRecord", "kill", direct);         // Android 10-11
+
+        // 1c. "keep in memory": the low-memory killer (lmkd) picks victims by oom_score_adj. A home app sits at 600 and
+        //     drops lower when cached; capping the main process of a protected app at 200 (perceptible) makes lmkd
+        //     kill other cached apps first. lmkd itself is never blocked.
+        hook(cl, "com.android.server.am.ProcessList", "setOomAdj", new XC_MethodHook() {
+            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                if (p.args.length < 3 || !(p.args[0] instanceof Integer) || !(p.args[2] instanceof Integer)) return;
+                load();
+                if (!keepMem || guarded.isEmpty()) return;
+                int adj = (Integer) p.args[2];
+                if (adj <= KEEP_ADJ) return;
+                String name = procName((Integer) p.args[0]);
+                if (guarded.contains(name)) p.args[2] = KEEP_ADJ;
+            }
+        });
 
         // 2. force-stop / kill-background requested by another app (the recents screen, a cleaner)
         XC_MethodHook byCaller = new XC_MethodHook() {
@@ -195,13 +211,14 @@ public class Hook implements IXposedHookLoadPackage {
         if (now - lastLoad < 2000) return;
         lastLoad = now;
         Set<String> s = new HashSet<String>();
-        boolean aggr = false;
+        boolean aggr = false, mem = false;
         try {
             if (prefs == null) prefs = new XSharedPreferences(PKG, "guard");
             if (prefs.hasFileChanged()) prefs.reload();
             Set<String> p = prefs.getStringSet("pkgs", null);
             if (p != null) s.addAll(p);
             aggr = prefs.getBoolean("aggressive", false);
+            mem = prefs.getBoolean("keepmem", false);
         } catch (Throwable ignored) { }
         try {   // the copy the settings screen writes with root (used when the shared preferences are not readable)
             if (ROOT_CONF.canRead()) {
@@ -210,6 +227,7 @@ public class Hook implements IXposedHookLoadPackage {
                 while ((line = br.readLine()) != null) {
                     line = line.trim();
                     if (line.equals("aggressive=1")) aggr = true;
+                    else if (line.equals("keepmem=1")) mem = true;
                     else if (!line.isEmpty() && !line.startsWith("#") && !line.contains("=")) s.add(line);
                 }
                 br.close();
@@ -217,6 +235,7 @@ public class Hook implements IXposedHookLoadPackage {
         } catch (Throwable ignored) { }
         guarded = s;
         aggressive = aggr;
+        keepMem = mem;
     }
 
     static String pkgOf(Object processRecord) {

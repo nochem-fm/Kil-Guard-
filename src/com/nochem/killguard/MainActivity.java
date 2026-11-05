@@ -52,7 +52,7 @@ public class MainActivity extends Activity {
     int filterMode;            // 0 = apps, 1 = protected only, 2 = everything incl. system
     String query = "";
     BaseAdapter adapter;
-    TextView statusChip, empty, countChip, aggrChip;
+    TextView statusChip, empty, countChip, aggrChip, memChip;
     final TextView[] modeChips = new TextView[3];
 
     int BG, SURF, TXT, DIM, ACC, ON_ACC, GOOD, BAD;
@@ -202,6 +202,23 @@ public class MainActivity extends Activity {
                     .setPositiveButton("הבנתי", null).show();
             }
         });
+        memChip = chip("");
+        memChip.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                boolean on = !prefs.getBoolean("keepmem", false);
+                prefs.edit().putBoolean("keepmem", on).apply();
+                save();
+                refresh();
+                if (on) new AlertDialog.Builder(MainActivity.this).setTitle("שמור בזיכרון")
+                    .setMessage("כשהזיכרון נגמר, מנגנון המערכת (lmkd) סוגר אפליקציות לפי עדיפות, ולאנצ'ר לא נמצא גבוה ברשימה. "
+                        + "האפשרות הזו מעלה את העדיפות של האפליקציות המוגנות, כך שהמערכת תסגור קודם אפליקציות אחרות שברקע.\n\n"
+                        + "המחיר: פחות זיכרון לשאר האפליקציות. נכנס לתוקף כשהאפליקציה המוגנת נפתחת מחדש.")
+                    .setPositiveButton("הבנתי", null).show();
+            }
+        });
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-2, -2);
+        ml.setMarginEnd(dp(6));
+        chips.addView(memChip, ml);
         chips.addView(aggrChip);
         hs.addView(chips);
         root.addView(hs);
@@ -294,6 +311,9 @@ public class MainActivity extends Activity {
         statusChip.setBackground(round((on ? GOOD : BAD) & 0x22FFFFFF, 12));
         statusChip.setOnClickListener(on ? null : new View.OnClickListener() { public void onClick(View v) { showInfo(); } });
         for (int i = 0; i < 3; i++) chipOn(modeChips[i], filterMode == i);
+        boolean mem = prefs.getBoolean("keepmem", false);
+        memChip.setText((mem ? "✓ " : "") + "שמור בזיכרון");
+        chipOn(memChip, mem);
         boolean aggr = prefs.getBoolean("aggressive", false);
         aggrChip.setText((aggr ? "✓ " : "") + "מצב קשוח");
         aggrChip.setBackground(round(aggr ? (BAD & 0x33FFFFFF) : SURF, 16));
@@ -415,6 +435,7 @@ public class MainActivity extends Activity {
         prefs.edit().putStringSet("pkgs", new HashSet<String>(chosen)).apply();
         final StringBuilder conf = new StringBuilder("# Kill Guard\n");
         if (prefs.getBoolean("aggressive", false)) conf.append("aggressive=1\n");
+        if (prefs.getBoolean("keepmem", false)) conf.append("keepmem=1\n");
         for (String p : chosen) conf.append(p).append('\n');
         new Thread(new Runnable() {
             public void run() {
