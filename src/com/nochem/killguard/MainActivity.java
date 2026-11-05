@@ -265,7 +265,17 @@ public class MainActivity extends Activity {
             + (moduleActive() ? "המודול פעיל. שינויים ברשימה נכנסים לתוקף מיד."
             : "המודול עוד לא פעיל: ב-Vector / LSPosed הפעל את 'שומר מהריגה', סמן בהיקף את 'מסגרת המערכת' (System Framework), ואתחל את הטלפון.")
             + "\n\n☰ יומן: מה נחסם ומה הותר.";
-        new AlertDialog.Builder(this).setTitle("שומר מהריגה").setMessage(msg).setPositiveButton("סגור", null).show();
+        String ver = "";
+        try { ver = " " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) { }
+        msg += "\n\nשומר מהריגה" + ver + "\nנבנה על ידי @נוחעם-FM מפורום מתמחים טופ";
+        new AlertDialog.Builder(this).setTitle("שומר מהריגה").setMessage(msg).setPositiveButton("סגור", null)
+            .setNeutralButton("@נוחעם-FM", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://mitmachim.top/user/%D7%A0%D7%95%D7%97%D7%A2%D7%9D-fm")));
+                    } catch (Exception ignored) { }
+                }
+            }).show();
     }
 
     String defaultHome() {

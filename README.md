@@ -46,4 +46,4 @@
 
 ## קרדיט
 
-נבנה על ידי **[@נוחעם-FM](https://mitmachim.top/user/%D7%A0%D7%95%D7%97%D7%A2%D7%9D-fm)**.
+נבנה על ידי **[@נוחעם-FM](https://mitmachim.top/user/%D7%A0%D7%95%D7%97%D7%A2%D7%9D-fm)** מפורום מתמחים טופ.
